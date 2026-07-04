@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Comet Breaker — Racha Estelar</title>
+<style>
+:root{
+  --bg-void: #070B18;
+  --ice: #4FC3F7; --ice-deep: #1E6E96; --ice-glow: rgba(79,195,247,0.55);
+  --ember: #FF8A3D; --ember-deep: #A54E14; --ember-glow: rgba(255,138,61,0.55);
+  --verdant: #4CD787; --verdant-deep: #1F7A50; --verdant-glow: rgba(76,215,135,0.55);
+  --gold: #F5C24C; --gold-soft: #F5D98A;
+  --ink: #E8ECF5; --ink-dim: #8B93B8;
+  --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body: 'Inter', 'Segoe UI', sans-serif;
+}
+*{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body{ margin:0; padding:0; height:100%; overflow:hidden; background:var(--bg-void); font-family:var(--font-body); color:var(--ink); touch-action:none; }
+#app{
+  position:relative; height:100dvh; width:100vw; display:flex; flex-direction:column;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(79,195,247,0.08), transparent 40%),
+    radial-gradient(circle at 80% 85%, rgba(255,138,61,0.07), transparent 45%),
+    var(--bg-void);
+}
+#hud{ display:flex; align-items:center; justify-content:space-between; padding:max(10px,env(safe-area-inset-top)) 18px 10px; gap:12px; z-index:5; }
+.hud-left,.hud-right{ display:flex; flex-direction:column; align-items:center; min-width:64px; }
+.hud-left .value,.hud-right .value{ font-family:var(--font-display); font-size:22px; font-weight:700; letter-spacing:.5px; }
+#ball-count{ color:var(--gold); }
+.label{ font-size:10px; text-transform:uppercase; letter-spacing:1.5px; color:var(--ink-dim); }
+.label.small{ margin-top:4px; }
+.hud-center{ flex:1; display:flex; flex-direction:column; align-items:center; max-width:280px; }
+#level-bar{ width:100%; height:8px; border-radius:6px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); overflow:hidden; }
+#level-fill{ height:100%; width:0%; background:linear-gradient(90deg,var(--ice),var(--verdant),var(--ember)); box-shadow:0 0 12px 1px rgba(245,194,76,.6); transition:width 180ms ease-out; }
+#game-canvas{ flex:1; width:100%; display:block; touch-action:none; }
+#controls{ padding:6px 0 max(14px,env(safe-area-inset-bottom)); text-align:center; }
+#aim-hint{ font-size:11px; color:var(--ink-dim); letter-spacing:.5px; }
+#overlay-message{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(5,8,20,.82); backdrop-filter:blur(6px); z-index:20; transition:opacity 200ms ease; }
+#overlay-message.hidden{ opacity:0; pointer-events:none; }
+.overlay-card{ text-align:center; padding:32px 28px; max-width:360px; }
+.overlay-card h1{ font-family:var(--font-display); font-size:30px; margin:0 0 10px; background:linear-gradient(90deg,var(--ice),var(--gold-soft),var(--ember)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.overlay-card p{ color:var(--ink-dim); font-size:14px; line-height:1.5; margin-bottom:22px; }
+#overlay-button{ font-family:var(--font-display); font-size:15px; font-weight:600; padding:12px 30px; border-radius:999px; border:none; color:#0C0F1E; background:linear-gradient(90deg,var(--gold-soft),var(--gold)); cursor:pointer; box-shadow:0 0 24px rgba(245,194,76,.35); }
+#overlay-button:active{ transform:scale(.97); }
+@media (min-width:720px){ #app{ max-width:480px; margin:0 auto; box-shadow:0 0 60px rgba(0,0,0,.6); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="hud">
+    <div class="hud-left"><span class="label">Puntos</span><span id="score" class="value">0</span></div>
+    <div class="hud-center"><div id="level-bar"><div id="level-fill"></div></div><span id="level-label" class="label small">Nivel 1</span></div>
+    <div class="hud-right"><span class="label">Cometas</span><span id="ball-count" class="value">60</span></div>
+  </header>
+
+  <canvas id="game-canvas"></canvas>
+
+  <div id="overlay-message" class="hidden">
+    <div class="overlay-card">
+      <h1 id="overlay-title">Comet Breaker</h1>
+      <p id="overlay-text">Arrastra hacia arriba y suelta para lanzar tus cometas.</p>
+      <button id="overlay-button">Comenzar</button>
+    </div>
+  </div>
+
+  <footer id="controls"><div id="aim-hint">Desliza desde aquí para apuntar</div></footer>
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   MODEL — Brick
+   Colour is driven by the block's own number: low values glow ice-blue,
+   mid values verdant-green, high values ember-orange. Chaining hits of the
+   same colour charges your comets with bonus damage — that's the twist.
+
+   Some blocks also carry a BONUS: a small marked icon that pays off when
+   you destroy that specific block. This is the only way comet count (or
+   score bonuses) ever change — never just from breaking a regular block.
+   ========================================================================= */
+const ELEMENTS = {
+  ice:     { color: '#4FC3F7', deep: '#1E6E96', glow: 'rgba(79,195,247,0.55)' },
+  ember:   { color: '#FF8A3D', deep: '#A54E14', glow: 'rgba(255,138,61,0.55)' },
+  verdant: { color: '#4CD787', deep: '#1F7A50', glow: 'rgba(76,215,135,0.55)' },
+};
+function classifyByValue(hp) {
+  if (hp <= 40) return 'ice';
+  if (hp <= 50) return 'verdant';
+  return 'ember';
+}
+
+const BONUS_TYPES = {
+  comets: { icon: '☄', label: '+3 cometas',  color: '#F5C24C' },
+  score:  { icon: '◆', label: '+150 puntos', color: '#B98CFF' },
+  bomb:   { icon: '✺', label: 'Explota vecinos', color: '#FF5C6C' },
+};
+
+class Brick {
+  constructor(col, row, hp, element, bonusType = null) {
+    this.col = col; this.row = row;
+    this.hp = hp; this.maxHp = hp;
+    this.element = element;
+    this.bonusType = bonusType; // null | 'comets' | 'score' | 'bomb'
+    this.alive = true;
+    this.hitFlash = 0;
+  }
+  hit(damage) {
+    this.hp -= damage;
+    this.hitFlash = 0.12;
+    if (this.hp <= 0) { this.hp = 0; this.alive = false; return true; }
+    return false;
+  }
+  healthRatio() { return Math.max(0, this.hp / this.maxHp); }
+}
+
+/* =========================================================================
+   MODEL — Ball (comet)
+   ========================================================================= */
+const BALL_RADIUS = 8;
+const BALL_SPEED = 640;
+
+class Ball {
+  constructor(x, y, dirX, dirY, charged = false) {
+    this.x = x; this.y = y;
+    this.vx = dirX * BALL_SPEED; this.vy = dirY * BALL_SPEED;
+    this.radius = BALL_RADIUS;
+    this.active = true;
+    this.charged = charged;
+    this.trail = [];
+  }
+  update(dt, bounds) {
+    if (!this.active) return;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    if (this.x - this.radius <= 0) { this.x = this.radius; this.vx = Math.abs(this.vx); }
+    else if (this.x + this.radius >= bounds.width) { this.x = bounds.width - this.radius; this.vx = -Math.abs(this.vx); }
+    if (this.y - this.radius <= 0) { this.y = this.radius; this.vy = Math.abs(this.vy); }
+    if (this.y - this.radius > bounds.height) { this.active = false; }
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 10) this.trail.shift();
+  }
+  bounceOffRect(rect) {
+    const closestX = Math.max(rect.x, Math.min(this.x, rect.x + rect.w));
+    const closestY = Math.max(rect.y, Math.min(this.y, rect.y + rect.h));
+    const dx = this.x - closestX, dy = this.y - closestY;
+    const overlapX = this.radius - Math.abs(dx);
+    const overlapY = this.radius - Math.abs(dy);
+    if (overlapX < overlapY) {
+      this.vx = dx < 0 ? -Math.abs(this.vx) : Math.abs(this.vx);
+      this.x += dx < 0 ? -overlapX : overlapX;
+    } else {
+      this.vy = dy < 0 ? -Math.abs(this.vy) : Math.abs(this.vy);
+      this.y += dy < 0 ? -overlapY : overlapY;
+    }
+  }
+  collidesWithRect(rect) {
+    const closestX = Math.max(rect.x, Math.min(this.x, rect.x + rect.w));
+    const closestY = Math.max(rect.y, Math.min(this.y, rect.y + rect.h));
+    const dx = this.x - closestX, dy = this.y - closestY;
+    return (dx * dx + dy * dy) <= this.radius * this.radius;
+  }
+}
+
+/* =========================================================================
+   MODEL — GameModel (rules, scoring, rounds)
+   ========================================================================= */
+const COLS = 7;
+const VISIBLE_ROWS = 11;
+const DANGER_ROW = VISIBLE_ROWS - 1;
+const LAUNCH_GAP_MS = 40;
+const COMBO_CHARGE_THRESHOLD = 4; // consecutive same-colour hits needed to charge a comet
+const BONUS_CHANCE = 0.12;        // chance any given block spawns as a bonus block
+const BASE_HP_TIERS = [10, 20, 30, 40, 50, 70, 90, 120];
+const STARTING_BALLS = 60;
+const LEVEL_BASE_TARGET = 600; // total HP destroyed needed to clear level 1
+
+class GameModel {
+  constructor(width, height) {
+    this.width = width; this.height = height;
+    this.cols = COLS;
+    this.cellSize = width / COLS;
+    this.rowHeight = this.cellSize * 0.82; // one "block" of vertical descent
+    this.topMargin = this.cellSize * 0.5;
+
+    this.bricks = []; this.balls = [];
+    this.score = 0;
+    this.ballCount = STARTING_BALLS;
+    this.round = 0;
+
+    this.level = 1;
+    this.levelProgress = 0;
+    this.levelTarget = LEVEL_BASE_TARGET;
+
+    this.lastElement = null; this.chainCount = 0;
+
+    this.launchQueue = 0; this.launchTimer = 0;
+    this.launchDir = { x: 0, y: -1 };
+    this.aiming = false; this.busy = false; this.gameOver = false;
+    this.events = [];
+
+    this.launchX = width / 2;
+    this.launchY = height - BALL_RADIUS * 3;
+
+    this._seedInitialRows();
+  }
+
+  resize(width, height) {
+    this.width = width; this.height = height;
+    this.cellSize = width / this.cols;
+    this.rowHeight = this.cellSize * 0.82;
+    this.launchX = width / 2;
+    this.launchY = height - BALL_RADIUS * 3;
+  }
+
+  _seedInitialRows() { for (let r = 0; r < 3; r++) this._addRow(r); }
+
+  _pickBonusType() {
+    const keys = Object.keys(BONUS_TYPES);
+    return keys[Math.floor(Math.random() * keys.length)];
+  }
+
+  _addRow(rowIndex) {
+    const difficultyScale = 1 + (this.level - 1) * 0.08;
+    for (let c = 0; c < this.cols; c++) {
+      if (Math.random() < 0.22) continue;
+      const baseTier = BASE_HP_TIERS[Math.floor(Math.random() * BASE_HP_TIERS.length)];
+      const tier = Math.round((baseTier * difficultyScale) / 10) * 10;
+      const element = classifyByValue(tier);
+      const bonusType = Math.random() < BONUS_CHANCE ? this._pickBonusType() : null;
+      this.bricks.push(new Brick(c, rowIndex, tier, element, bonusType));
+    }
+  }
+
+  brickRect(brick) {
+    return {
+      x: brick.col * this.cellSize + 2,
+      y: this.topMargin + brick.row * this.rowHeight + 2,
+      w: this.cellSize - 4,
+      h: this.rowHeight - 4,
+    };
+  }
+
+  setAimDirection(pointerX, pointerY) {
+    let dx = pointerX - this.launchX;
+    let dy = pointerY - this.launchY;
+    if (dy > -40) dy = -40;
+    const len = Math.hypot(dx, dy) || 1;
+    this.launchDir = { x: dx / len, y: dy / len };
+    this.aiming = true;
+  }
+  cancelAim() { this.aiming = false; }
+
+  fireVolley() {
+    if (this.busy || this.gameOver) return;
+    this.aiming = false; this.busy = true;
+    this.launchQueue = this.ballCount;
+    this.launchTimer = 0;
+    this.chainCount = 0; this.lastElement = null;
+  }
+
+  update(dt) {
+    if (this.gameOver) return;
+    this.events = [];
+
+    if (this.launchQueue > 0) {
+      this.launchTimer -= dt * 1000;
+      if (this.launchTimer <= 0) {
+        this.balls.push(new Ball(this.launchX, this.launchY, this.launchDir.x, this.launchDir.y));
+        this.launchQueue--;
+        this.launchTimer = LAUNCH_GAP_MS;
+      }
+    }
+
+    const bounds = { width: this.width, height: this.height };
+    for (const ball of this.balls) {
+      if (!ball.active) continue;
+      ball.update(dt, bounds);
+      this._resolveBrickCollisions(ball);
+    }
+
+    const stillFalling = this.balls.some(b => b.active);
+    this.balls = this.balls.filter(b => b.active);
+
+    for (const brick of this.bricks) {
+      if (brick.hitFlash > 0) brick.hitFlash = Math.max(0, brick.hitFlash - dt);
+    }
+
+    if (this.busy && this.launchQueue === 0 && !stillFalling) this._endRound();
+  }
+
+  _resolveBrickCollisions(ball) {
+    for (const brick of this.bricks) {
+      if (!brick.alive) continue;
+      const rect = this.brickRect(brick);
+      if (!ball.collidesWithRect(rect)) continue;
+
+      const damage = ball.charged ? 2 : 1;
+      const destroyed = brick.hit(damage);
+      this._registerElementHit(brick.element, ball);
+      ball.bounceOffRect(rect);
+
+      if (destroyed) {
+        this._onBrickDestroyed(brick, rect);
+      }
+      break;
+    }
+  }
+
+  _onBrickDestroyed(brick, rect) {
+    this.score += brick.maxHp;
+    this._advanceLevelProgress(brick.maxHp);
+    this.events.push({ type: 'pop', x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, element: brick.element });
+
+    // Bonus payoff is the ONLY way comet count or score bonuses change —
+    // never from breaking a plain block.
+    if (brick.bonusType === 'comets') {
+      this.ballCount = Math.min(200, this.ballCount + 3);
+      this.events.push({ type: 'bonus-comets', x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
+    } else if (brick.bonusType === 'score') {
+      this.score += 150;
+      this.events.push({ type: 'bonus-score', x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
+    } else if (brick.bonusType === 'bomb') {
+      this._explodeNeighbors(brick);
+      this.events.push({ type: 'bonus-bomb', x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
+    }
+  }
+
+  // Bomb bonus blocks are the one deliberate, clearly-telegraphed exception
+  // to "only direct hits deal damage": destroying the bomb itself (a direct
+  // hit) chips 1 HP off its four immediate neighbours.
+  _explodeNeighbors(bombBrick) {
+    const offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (const [dc, dr] of offsets) {
+      const neighbor = this.bricks.find(b => b.alive && b.col === bombBrick.col + dc && b.row === bombBrick.row + dr);
+      if (!neighbor) continue;
+      const rect = this.brickRect(neighbor);
+      const destroyed = neighbor.hit(1);
+      if (destroyed) this._onBrickDestroyed(neighbor, rect);
+    }
+  }
+
+  _advanceLevelProgress(amount) {
+    this.levelProgress += amount;
+    while (this.levelProgress >= this.levelTarget) {
+      this.levelProgress -= this.levelTarget;
+      this.level++;
+      this.levelTarget = Math.round(LEVEL_BASE_TARGET * (1 + (this.level - 1) * 0.25));
+      this.events.push({ type: 'levelup', level: this.level });
+    }
+  }
+
+  _registerElementHit(element, ball) {
+    if (element === this.lastElement) this.chainCount++;
+    else { this.lastElement = element; this.chainCount = 1; }
+    if (this.chainCount >= COMBO_CHARGE_THRESHOLD) {
+      ball.charged = true; // long same-colour chains charge the comet for double damage
+    }
+  }
+
+  _endRound() {
+    this.busy = false;
+    this.round++;
+    this.bricks = this.bricks.filter(b => b.alive);
+
+    // Every block descends exactly one block-space per round.
+    for (const brick of this.bricks) brick.row++;
+    this._addRow(0);
+
+    if (this.bricks.some(b => b.row >= DANGER_ROW)) {
+      this.gameOver = true;
+      this.events.push({ type: 'gameover' });
+    }
+  }
+
+  reset(width, height) {
+    this.bricks = []; this.balls = [];
+    this.score = 0; this.ballCount = STARTING_BALLS; this.round = 0;
+    this.level = 1; this.levelProgress = 0; this.levelTarget = LEVEL_BASE_TARGET;
+    this.lastElement = null; this.chainCount = 0;
+    this.launchQueue = 0; this.busy = false; this.gameOver = false;
+    this.resize(width, height);
+    this._seedInitialRows();
+  }
+}
+
+/* =========================================================================
+   VIEW — GameView (renders GameModel onto canvas)
+   ========================================================================= */
+class GameView {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.stars = [];
+    this.particles = [];
+    this.levelFlash = 0;
+    this.floatingTexts = []; // {x,y,text,color,life}
+    this._buildStarfield();
+  }
+  _buildStarfield() {
+    this.stars = Array.from({ length: 60 }, () => ({
+      x: Math.random(), y: Math.random(),
+      r: Math.random() * 1.4 + 0.3, twinkle: Math.random() * Math.PI * 2,
+    }));
+  }
+  resize(width, height, dpr) {
+    this.canvas.width = width * dpr;
+    this.canvas.height = height * dpr;
+    this.canvas.style.width = width + 'px';
+    this.canvas.style.height = height + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.width = width; this.height = height;
+  }
+  consumeEvents(events) {
+    for (const ev of events) {
+      if (ev.type === 'pop') this._spawnBurst(ev.x, ev.y, ELEMENTS[ev.element]?.color || '#fff');
+      if (ev.type === 'bonus-comets') { this._spawnBurst(ev.x, ev.y, BONUS_TYPES.comets.color, 14); this._spawnFloatingText(ev.x, ev.y, '+3 cometas', BONUS_TYPES.comets.color); }
+      if (ev.type === 'bonus-score') { this._spawnBurst(ev.x, ev.y, BONUS_TYPES.score.color, 14); this._spawnFloatingText(ev.x, ev.y, '+150', BONUS_TYPES.score.color); }
+      if (ev.type === 'bonus-bomb') { this._spawnBurst(ev.x, ev.y, BONUS_TYPES.bomb.color, 20); }
+      if (ev.type === 'levelup') { this.levelFlash = 0.35; this._spawnFloatingText(this.width / 2, this.height * 0.35, `¡Nivel ${ev.level}!`, '#FFF3CE', true); }
+    }
+  }
+  _spawnFloatingText(x, y, text, color, big = false) {
+    this.floatingTexts.push({ x, y, text, color, life: 1.1, maxLife: 1.1, big });
+  }
+  _spawnBurst(x, y, color, count = 8) {
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count + Math.random() * 0.3;
+      const speed = 60 + Math.random() * 90;
+      this.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.5 + Math.random() * 0.3, maxLife: 0.6, color });
+    }
+  }
+  update(dt) {
+    this.particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.94; p.vy *= 0.94; p.life -= dt; });
+    this.particles = this.particles.filter(p => p.life > 0);
+    this.floatingTexts.forEach(t => { t.y -= 24 * dt; t.life -= dt; });
+    this.floatingTexts = this.floatingTexts.filter(t => t.life > 0);
+    if (this.levelFlash > 0) this.levelFlash = Math.max(0, this.levelFlash - dt);
+  }
+  render(model, time) {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.width, this.height);
+    this._drawBackground(ctx, time);
+    this._drawGrid(ctx, model);
+    this._drawBricks(ctx, model);
+    this._drawParticles(ctx);
+    this._drawFloatingTexts(ctx);
+    this._drawAimLine(ctx, model);
+    this._drawBalls(ctx, model);
+    this._drawLaunchPad(ctx, model);
+    if (this.levelFlash > 0) this._drawLevelFlash(ctx);
+  }
+  _drawBackground(ctx, time) {
+    ctx.save();
+    for (const s of this.stars) {
+      const alpha = 0.35 + 0.5 * Math.abs(Math.sin(time * 0.001 + s.twinkle));
+      ctx.globalAlpha = alpha; ctx.fillStyle = '#DCE6FF';
+      ctx.beginPath(); ctx.arc(s.x * this.width, s.y * this.height, s.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  _drawGrid(ctx, model) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(150,170,255,0.06)'; ctx.lineWidth = 1;
+    for (let c = 0; c <= model.cols; c++) {
+      const x = c * model.cellSize;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.height); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  _drawBricks(ctx, model) {
+    for (const brick of model.bricks) {
+      if (!brick.alive) continue;
+      const rect = model.brickRect(brick);
+      const palette = ELEMENTS[brick.element];
+      const ratio = brick.healthRatio();
+
+      ctx.save();
+      ctx.shadowColor = palette.glow;
+      ctx.shadowBlur = brick.hitFlash > 0 ? 18 : 6;
+      const grad = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
+      grad.addColorStop(0, brick.hitFlash > 0 ? '#FFFFFF' : palette.color);
+      grad.addColorStop(1, palette.deep);
+      ctx.fillStyle = grad;
+      this._roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 8); ctx.fill();
+
+      if (ratio < 1) {
+        ctx.globalAlpha = 0.35 * (1 - ratio);
+        ctx.fillStyle = '#000';
+        this._roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 8); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      if (brick.bonusType) {
+        const bonus = BONUS_TYPES[brick.bonusType];
+        ctx.save();
+        ctx.strokeStyle = bonus.color;
+        ctx.lineWidth = 2;
+        this._roundRect(ctx, rect.x + 1.5, rect.y + 1.5, rect.w - 3, rect.h - 3, 7);
+        ctx.stroke();
+        ctx.fillStyle = bonus.color;
+        ctx.font = `700 ${Math.round(rect.h * 0.32)}px sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(bonus.icon, rect.x + rect.w - rect.w * 0.2, rect.y + rect.h * 0.24);
+        ctx.restore();
+      }
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#0B1226';
+      ctx.font = `700 ${Math.round(rect.h * 0.34)}px 'Space Grotesk', sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(brick.hp), rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+      ctx.restore();
+    }
+  }
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  _computeAimPath(model) {
+    // Ray-traces the comet's path off the side walls and the top wall so the
+    // player can read the full trajectory before firing — bricks are ignored
+    // here on purpose, same as the reference screenshot's guide line.
+    const points = [{ x: model.launchX, y: model.launchY }];
+    let x = model.launchX, y = model.launchY;
+    let dx = model.launchDir.x, dy = model.launchDir.y;
+    let bounces = 6;
+
+    while (bounces > 0) {
+      const tTop = dy < 0 ? y / -dy : Infinity;
+      const tLeft = dx < 0 ? -x / dx : Infinity;
+      const tRight = dx > 0 ? (model.width - x) / dx : Infinity;
+      const t = Math.min(tTop, tLeft, tRight);
+      if (!isFinite(t) || t <= 0) break;
+
+      x += dx * t; y += dy * t;
+      points.push({ x, y });
+
+      if (t === tTop) break; // reached the top edge — trajectory preview ends here
+      dx = -dx; // bounced off a side wall
+      bounces--;
+    }
+    return points;
+  }
+  _drawAimLine(ctx, model) {
+    if (!model.aiming || model.busy) return;
+    const points = this._computeAimPath(model);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245,194,76,0.65)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Bounce markers along the way
+    for (let i = 1; i < points.length - 1; i++) {
+      ctx.save();
+      ctx.fillStyle = '#F5C24C';
+      ctx.shadowColor = 'rgba(245,194,76,0.8)';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(points[i].x, points[i].y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Glowing endpoint where the trajectory currently runs out
+    const end = points[points.length - 1];
+    ctx.save();
+    ctx.fillStyle = '#FFF3CE';
+    ctx.shadowColor = 'rgba(255,243,206,0.95)';
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  _drawBalls(ctx, model) {
+    for (const ball of model.balls) {
+      for (let i = 0; i < ball.trail.length; i++) {
+        const t = ball.trail[i];
+        const alpha = (i / ball.trail.length) * 0.5;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = ball.charged ? '#FF8A3D' : '#F5C24C';
+        ctx.beginPath(); ctx.arc(t.x, t.y, ball.radius * (0.3 + 0.5 * (i / ball.trail.length)), 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      ctx.save();
+      ctx.shadowColor = ball.charged ? 'rgba(255,138,61,0.9)' : 'rgba(245,194,76,0.9)';
+      ctx.shadowBlur = ball.charged ? 16 : 10;
+      ctx.fillStyle = ball.charged ? '#FFB067' : '#FFF3CE';
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  }
+  _drawLaunchPad(ctx, model) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245,194,76,0.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, model.launchY + 14); ctx.lineTo(this.width, model.launchY + 14); ctx.stroke();
+    ctx.fillStyle = '#F5C24C';
+    ctx.beginPath(); ctx.arc(model.launchX, model.launchY, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  _drawParticles(ctx) {
+    for (const p of this.particles) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  }
+  _drawFloatingTexts(ctx) {
+    for (const t of this.floatingTexts) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, t.life / t.maxLife);
+      ctx.fillStyle = t.color;
+      ctx.font = `700 ${t.big ? 26 : 14}px 'Space Grotesk', sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(t.text, t.x, t.y);
+      ctx.restore();
+    }
+  }
+  _drawLevelFlash(ctx) {
+    ctx.save();
+    ctx.globalAlpha = this.levelFlash * 0.5;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, this.width, this.height);
+    ctx.restore();
+  }
+}
+
+/* =========================================================================
+   CONTROLLER — GameController (input, loop, HUD sync)
+   ========================================================================= */
+class GameController {
+  constructor(canvas, hud) {
+    this.canvas = canvas; this.hud = hud;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const { width, height } = canvas.getBoundingClientRect();
+
+    this.model = new GameModel(width, height);
+    this.view = new GameView(canvas);
+    this.view.resize(width, height, this.dpr);
+
+    this._lastTime = 0;
+    this._pointerActive = false;
+    this._gameOverShown = false;
+
+    this._bindInput();
+    this._bindResize();
+    this._bindOverlay();
+    this._loop = this._loop.bind(this);
+  }
+  start() { requestAnimationFrame(this._loop); }
+  _loop(time) {
+    const dt = Math.min(0.032, (time - (this._lastTime || time)) / 1000);
+    this._lastTime = time;
+
+    this.model.update(dt);
+    this.view.consumeEvents(this.model.events);
+    this.view.update(dt);
+    this.view.render(this.model, time);
+    this._syncHud();
+
+    if (this.model.gameOver && !this._gameOverShown) {
+      this._gameOverShown = true;
+      this._showOverlay('Fin de la partida', `Alcanzaste ${this.model.score} puntos. Las constelaciones te superaron.`, 'Reintentar');
+    }
+    requestAnimationFrame(this._loop);
+  }
+  _syncHud() {
+    this.hud.score.textContent = this.model.score;
+    this.hud.ballCount.textContent = this.model.ballCount;
+    const pct = Math.min(100, (this.model.levelProgress / this.model.levelTarget) * 100);
+    this.hud.levelFill.style.width = `${pct}%`;
+    this.hud.levelLabel.textContent = `Nivel ${this.model.level}`;
+  }
+  _bindInput() {
+    const canvas = this.canvas;
+    const getPos = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const point = e.touches ? e.touches[0] : e;
+      return { x: point.clientX - rect.left, y: point.clientY - rect.top };
+    };
+    const onDown = (e) => {
+      if (this.model.busy || this.model.gameOver) return;
+      this._pointerActive = true;
+      const pos = getPos(e);
+      this.model.setAimDirection(pos.x, pos.y);
+      e.preventDefault();
+    };
+    const onMove = (e) => {
+      if (!this._pointerActive) return;
+      const pos = getPos(e);
+      this.model.setAimDirection(pos.x, pos.y);
+      e.preventDefault();
+    };
+    const onUp = (e) => {
+      if (!this._pointerActive) return;
+      this._pointerActive = false;
+      this.model.fireVolley();
+      e.preventDefault();
+    };
+    canvas.addEventListener('mousedown', onDown);
+    canvas.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    canvas.addEventListener('touchstart', onDown, { passive: false });
+    canvas.addEventListener('touchmove', onMove, { passive: false });
+    canvas.addEventListener('touchend', onUp, { passive: false });
+    canvas.addEventListener('touchcancel', onUp, { passive: false });
+  }
+  _bindResize() {
+    const resize = () => {
+      const { width, height } = this.canvas.getBoundingClientRect();
+      this.model.resize(width, height);
+      this.view.resize(width, height, this.dpr);
+    };
+    window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+  }
+  _bindOverlay() {
+    this.hud.overlayButton.addEventListener('click', () => {
+      const { width, height } = this.canvas.getBoundingClientRect();
+      this.model.reset(width, height);
+      this._gameOverShown = false;
+      this._hideOverlay();
+    });
+  }
+  _showOverlay(title, text, buttonLabel) {
+    this.hud.overlayTitle.textContent = title;
+    this.hud.overlayText.textContent = text;
+    this.hud.overlayButton.textContent = buttonLabel;
+    this.hud.overlay.classList.remove('hidden');
+  }
+  _hideOverlay() { this.hud.overlay.classList.add('hidden'); }
+}
+
+/* =========================================================================
+   BOOTSTRAP
+   ========================================================================= */
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('game-canvas');
+  const hud = {
+    score: document.getElementById('score'),
+    ballCount: document.getElementById('ball-count'),
+    levelFill: document.getElementById('level-fill'),
+    levelLabel: document.getElementById('level-label'),
+    overlay: document.getElementById('overlay-message'),
+    overlayTitle: document.getElementById('overlay-title'),
+    overlayText: document.getElementById('overlay-text'),
+    overlayButton: document.getElementById('overlay-button'),
+  };
+  const controller = new GameController(canvas, hud);
+  controller.start();
+});
+</script>
+</body>
+</html>
